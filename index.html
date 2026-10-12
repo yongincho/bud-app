@@ -1,0 +1,192 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Bud</title>
+<meta name="description" content="The Bud companion app prototype, with a Bud emulator.">
+<meta name="theme-color" content="#000000">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Bud">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="icon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="icon-180.png">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500..800&family=Figtree:wght@400..700&family=JetBrains+Mono:wght@500;600&family=Nunito:wght@800;900&display=swap">
+<link rel="stylesheet" href="app.css">
+</head>
+<body>
+<div class="studio" id="studio">
+  <!-- ======================================================= the app -->
+  <section class="phone" id="phone" aria-label="Bud app">
+    <div class="app">
+      <header class="bar">
+        <span class="wordmark">bud</span>
+        <button class="device-chip" id="deviceChip" type="button" data-go="settings"><span class="led"></span><span id="deviceText">Virtual Bud</span></button>
+      </header>
+
+      <main class="pages">
+        <!-- home -->
+        <section class="page" id="page-home" aria-label="Home">
+          <div class="home-top">
+            <button class="bud bud-app" id="appBud" type="button" aria-label="Tap Bud to talk"><span class="bud-glass"><span class="bud-screen"></span></span></button>
+            <div class="home-status">
+              <p class="status" id="status"><span class="led"></span><span id="statusText">Ready</span></p>
+              <p class="status-sub" id="statusSub">Tap Bud to talk</p>
+            </div>
+          </div>
+          <div class="try" id="tryCard">
+            <p class="try-t">Try Bud</p>
+            <ol>
+              <li>Tap Bud, then type what you want, or pick an idea below.</li>
+              <li>When Bud glows pink, it needs your OK. Tap Bud to approve, or hold it for “not now”.</li>
+              <li>Have a second screen? Open this same page there and choose <b>Settings › Make this screen the Bud</b>.</li>
+            </ol>
+          </div>
+          <div class="feed" id="feed" aria-live="polite"></div>
+          <div class="suggest" id="suggest" aria-label="Try saying"></div>
+        </section>
+
+        <!-- agents -->
+        <section class="page" id="page-agents" aria-label="Agents" hidden>
+          <h2>Bud’s brain</h2>
+          <p class="hint">Bud works with the model you pick. Same tools, same approvals, any brain.</p>
+          <div class="prov-list" id="provList" role="radiogroup" aria-label="Model"></div>
+          <div class="prov-config" id="provConfig">
+            <div class="field">
+              <label for="provKey" id="provKeyLabel">API key</label>
+              <input id="provKey" type="password" autocomplete="off" spellcheck="false" placeholder="Paste your key">
+            </div>
+            <div class="field">
+              <label for="provModel">Model</label>
+              <input id="provModel" type="text" autocomplete="off" spellcheck="false">
+            </div>
+            <p class="hint small">Your key stays in this browser and goes only to that provider. For a real launch, keys live on Bud’s server, not in the app.</p>
+          </div>
+          <h2>Your agents</h2>
+          <p class="hint">Already using an always-on agent? Bud can be its face and its button.</p>
+          <div class="agent-cards">
+            <article class="agent-card">
+              <div class="ac-head"><b>OpenAI Dots</b><span class="badge">Planned</span></div>
+              <p>Dots work in the background and ask before they write. Bud shows what your Dot is doing and you approve with a tap. Path: a ChatGPT plugin.</p>
+            </article>
+            <article class="agent-card">
+              <div class="ac-head"><b>Meta Muse</b><span class="badge">Planned</span></div>
+              <p>Muse takes connectors from outside developers. A Bud connector lets Muse show its progress on Bud and ask for your OK.</p>
+            </article>
+            <article class="agent-card">
+              <div class="ac-head"><b>Claude and other MCP apps</b><span class="badge">Planned</span></div>
+              <p>A Bud MCP server gives any MCP-capable agent two tools: show a state on Bud, and ask you a question.</p>
+            </article>
+          </div>
+        </section>
+
+        <!-- looks -->
+        <section class="page" id="page-looks" aria-label="Looks" hidden>
+          <h2>Looks</h2>
+          <p class="hint">Dress Bud up. It changes on your Bud right away.</p>
+          <div class="look-grid" id="lookGrid"></div>
+          <h2>Shell</h2>
+          <div class="swatches" id="shellList"></div>
+          <p class="hint small">Looks and shell colors are concepts. Which ones come with Bud is TBD.</p>
+        </section>
+
+        <!-- settings -->
+        <section class="page" id="page-settings" aria-label="Settings" hidden>
+          <h2>Device</h2>
+          <div class="group">
+            <div class="row"><span>Connected Bud</span><b id="setDevice">Virtual Bud</b></div>
+            <button class="row link" id="useAsBud" type="button"><span>Make this screen the Bud</span><span class="chev">›</span></button>
+            <a class="row link" id="emuLink" href="#device" target="_blank" rel="noopener"><span>Open a Bud emulator in a new tab</span><span class="chev">›</span></a>
+            <button class="row link" id="pairBtn" type="button"><span>Pair a Bud over Bluetooth</span><span class="chev">›</span></button>
+          </div>
+          <p class="hint small" id="pairNote">No Bud hardware yet. To try two screens, open this same page on another device (same account) and tap “Make this screen the Bud” there. That screen then shows exactly what the device will, and tapping it talks to this app.</p>
+          <h2>Bud’s voice</h2>
+          <div class="group">
+            <label class="row"><span>Speak replies out loud</span><input type="checkbox" id="setSpeak" role="switch"></label>
+            <div class="row"><span>Style</span><span class="seg" id="setStyle" role="radiogroup" aria-label="Voice style"></span></div>
+            <label class="row"><span>Voice</span><select id="setVoice"></select></label>
+            <label class="row" id="engineRow"><span>Natural voice (OpenAI)</span><input type="checkbox" id="setEngine" role="switch"></label>
+            <button class="row link" id="voiceTest" type="button"><span>Hear Bud</span><span class="chev">›</span></button>
+            <label class="row"><span>Bud sounds</span><input type="checkbox" id="setSounds" role="switch"></label>
+          </div>
+          <p class="hint small" id="voiceOutNote"></p>
+          <h2>Listening</h2>
+          <div class="group">
+            <label class="row"><span>Mic</span><input type="checkbox" id="setMic" role="switch"></label>
+            <label class="row" id="wakeRow"><span>Listen for “Hey Bud”</span><input type="checkbox" id="setWake" role="switch"></label>
+          </div>
+          <p class="hint small" id="voiceInNote"></p>
+          <h2>Screen</h2>
+          <div class="group">
+            <label class="row"><span>Flip to wake</span><input type="checkbox" id="setFlip" role="switch"></label>
+            <label class="row"><span>Screen rests after</span><select id="setTimeout"><option value="5">5 seconds</option><option value="8">8 seconds</option><option value="15">15 seconds</option><option value="30">30 seconds</option></select></label>
+          </div>
+          <h2>Demo data</h2>
+          <div class="group">
+            <button class="row link" id="resetBtn" type="button"><span>Reset calendar, lists and chat</span><span class="chev">›</span></button>
+          </div>
+          <p class="hint small">Bud prototype. The calendar, contacts and messages here are demo data stored in this browser.</p>
+        </section>
+      </main>
+
+      <form class="composer" id="composer" autocomplete="off">
+        <label class="sr" for="say">Ask Bud</label>
+        <input id="say" type="text" placeholder="Ask Bud something" enterkeyhint="send">
+        <button class="mic" id="micBtn" type="button" aria-label="Talk"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5.5 11a6.5 6.5 0 0 0 13 0M12 17.5V21"/></svg></button>
+        <button class="send" id="sendBtn" type="submit" aria-label="Send"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 19V5M6 11l6-6 6 6"/></svg></button>
+      </form>
+
+      <nav class="tabbar" aria-label="Sections">
+        <button type="button" data-go="home" aria-current="page"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="8"/><rect x="8.6" y="9" width="2.4" height="4.4" rx="1.2" fill="currentColor" stroke="none"/><rect x="13" y="9" width="2.4" height="4.4" rx="1.2" fill="currentColor" stroke="none"/></svg><span>Bud</span></button>
+        <button type="button" data-go="agents"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3.5l2.2 4.9 5.3.5-4 3.6 1.2 5.2L12 15l-4.7 2.7 1.2-5.2-4-3.6 5.3-.5z"/></svg><span>Agents</span></button>
+        <button type="button" data-go="looks"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 5l4 3 4-3 4 4-3 3v7H7v-7L4 9z"/></svg><span>Looks</span></button>
+        <button type="button" data-go="settings"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M12 2.8v2.4M12 18.8v2.4M2.8 12h2.4M18.8 12h2.4M5.5 5.5l1.7 1.7M16.8 16.8l1.7 1.7M5.5 18.5l1.7-1.7M16.8 7.2l1.7-1.7"/></svg><span>Settings</span></button>
+      </nav>
+    </div>
+  </section>
+
+  <!-- ============================================ the Bud emulator -->
+  <section class="rig" id="rig" aria-label="Bud emulator">
+    <div class="rig-head">
+      <p class="rig-title">Bud emulator</p>
+      <p class="rig-sub" id="rigSub">What the device on the back of your phone shows</p>
+    </div>
+    <div class="rig-stage" id="rigStage">
+      <div class="rig-phone" id="rigPhone">
+        <div class="rig-art" id="rigArt" aria-hidden="true"></div>
+        <button class="bud bud-rig" id="rigBud" type="button" aria-label="Bud. Click to tap, press and hold to switch the mic"><span class="bud-glass"><span class="bud-screen"></span></span></button>
+      </div>
+    </div>
+    <div class="rig-controls">
+      <button class="pill" id="rigFlip" type="button" title="Flip the phone (F)"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 12a8 8 0 0 1 14-5.3M20 12a8 8 0 0 1-14 5.3M18 3v4h-4M6 21v-4h4"/></svg>Flip phone</button>
+      <button class="pill" id="rigTap" type="button" title="Tap Bud (Space)">Tap</button>
+      <button class="pill" id="rigHold" type="button" title="Press and hold Bud: mic on or off (H)">Hold</button>
+      <button class="pill" id="backToApp" type="button" hidden>Back to the app</button>
+    </div>
+    <p class="rig-hint">Click Bud to tap it, press and hold for the mic. Keys: <kbd>Space</kbd> tap, <kbd>F</kbd> flip, <kbd>H</kbd> hold.</p>
+    <p class="rig-link" id="rigLink"></p>
+  </section>
+</div>
+
+<div class="toast" id="toast" role="status" aria-live="polite"></div>
+
+<script src="lib/core.js"></script>
+<script src="lib/themes.js"></script>
+<script src="lib/states.js"></script>
+<script src="lib/face.js"></script>
+<script src="lib/fx.js"></script>
+<script src="lib/accessories.js"></script>
+<script src="lib/characters/eyes.js"></script>
+<script src="lib/characters/skins.js"></script>
+<script src="lib/screen.js"></script>
+<script src="lib/phones.js"></script>
+<script src="link.js"></script>
+<script src="voice.js"></script>
+<script src="agent.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
