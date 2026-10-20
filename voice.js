@@ -231,14 +231,19 @@
       opts = opts || {};
       text = sayable(text);
       if (!text) return Promise.resolve();
+      // each reading replaces the one before; one still downloading must never play late
+      const gen = (this.gen = (this.gen || 0) + 1);
+      if (this.audio) this.audio.pause();
       if (opts.engine === 'openai' && opts.key)
-        return this._openai(text, opts).catch((e) => {
+        return this._openai(text, opts, gen).catch((e) => {
+          if (gen !== this.gen) return;
           if (opts.onFallback) opts.onFallback(e);
           return this._system(text, opts);
         });
       return this._system(text, opts);
     },
     stop() {
+      this.gen = (this.gen || 0) + 1;
       try {
         if (root.speechSynthesis) root.speechSynthesis.cancel();
       } catch (e) {
@@ -278,7 +283,7 @@
         guard = setTimeout(fin, 2500 + text.length * 90);
       });
     },
-    async _openai(text, opts) {
+    async _openai(text, opts, gen) {
       const st = STYLES[opts.style] || STYLES.bright;
       const r = await fetch('https://api.openai.com/v1/audio/speech', {
         method: 'POST',
@@ -286,7 +291,9 @@
         body: JSON.stringify({ model: 'gpt-4o-mini-tts', voice: st.openai, input: text, instructions: st.how, response_format: 'mp3' }),
       });
       if (!r.ok) throw new Error(`OpenAI voice answered ${r.status}`);
-      const url = URL.createObjectURL(await r.blob());
+      const blob = await r.blob();
+      if (gen !== this.gen) return; // stopped, or another reading started, while this downloaded
+      const url = URL.createObjectURL(blob);
       return new Promise((res, rej) => {
         const a = new Audio(url);
         this.audio = a;

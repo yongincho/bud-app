@@ -97,6 +97,7 @@ svg { display: block; }
 .msg.err { border-color: rgba(255, 95, 176, 0.4); }
 .act { align-self: flex-start; display: inline-flex; align-items: center; gap: 8px; font: 600 11px/1.2 var(--mono); letter-spacing: 0.12em; text-transform: uppercase; color: var(--ink-2); animation: pop 0.28s var(--ease); }
 .ask { align-self: stretch; display: grid; gap: 10px; padding: 14px; border-radius: 20px; background: var(--card); border: 1px solid rgba(255, 95, 176, 0.35); box-shadow: 0 0 0 4px rgba(255, 95, 176, 0.06); animation: pop 0.28s var(--ease); }
+.ask p { margin: 0; }
 .ask .ask-t { display: flex; align-items: center; gap: 8px; font: 650 16px/1.2 var(--display); }
 .ask .ask-d { color: var(--ink-2); font-size: 14.5px; }
 .ask .ask-b { display: flex; gap: 8px; }
@@ -143,6 +144,12 @@ svg { display: block; }
 .agent-card { padding: 14px; border-radius: 16px; background: var(--card); border: 1px solid var(--line); }
 .agent-card p { margin: 6px 0 0; color: var(--ink-2); font-size: 13.5px; }
 .ac-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.connect-actions { display: flex; gap: 8px; }
+.connect-actions button, .connect-move { flex: 1; height: 40px; border-radius: 12px; border: 1px solid var(--line); background: var(--card-2); color: var(--ink); cursor: pointer; font-weight: 650; }
+.connect-move { width: 100%; margin-top: 8px; }
+#connectUrl { font: 500 12.5px/1 var(--mono); }
+.connect-id { float: right; font: 500 11px/1 var(--mono); letter-spacing: 0.04em; text-transform: none; color: var(--ink-3); }
+#connectConfig + #connectStatus, .group + #connectStatus { margin-bottom: 14px; }
 .badge { font: 600 10.5px/1 var(--mono); letter-spacing: 0.12em; text-transform: uppercase; color: var(--ink-3); border: 1px solid var(--line); border-radius: 999px; padding: 5px 8px; }
 
 /* looks */

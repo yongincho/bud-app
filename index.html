@@ -67,19 +67,40 @@
             <p class="hint small">Your key stays in this browser and goes only to that provider. For a real launch, keys live on Bud’s server, not in the app.</p>
           </div>
           <h2>Your agents</h2>
-          <p class="hint">Already using an always-on agent? Bud can be its face and its button.</p>
+          <p class="hint">Use ChatGPT, Claude or another agent? Connect it to Bud: it shows its work on Bud’s face and waits for your tap before it acts.</p>
+          <div class="group">
+            <label class="row"><span>Bud Connect</span><input type="checkbox" id="connectOn" role="switch"></label>
+          </div>
+          <div class="prov-config" id="connectConfig" hidden>
+            <div class="field">
+              <label for="connectServer">Server</label>
+              <input id="connectServer" type="url" inputmode="url" autocomplete="off" spellcheck="false" placeholder="https://bud-connect.example.workers.dev">
+            </div>
+            <div class="field">
+              <label for="connectUrl">Your connector link <span class="connect-id" id="connectId"></span></label>
+              <input id="connectUrl" type="text" readonly spellcheck="false" placeholder="Appears once the server is set">
+            </div>
+            <div class="connect-actions">
+              <button type="button" id="connectCopy">Copy link</button>
+              <button type="button" id="connectNew">New link</button>
+            </div>
+            <button type="button" class="connect-move" id="connectMove">Use on another device</button>
+            <p class="hint small">Add the link to your agent as a custom MCP connector, with no sign-in. Anyone with the link can show things on Bud and ask you questions, but only you can answer them. A new link turns the old one off.</p>
+            <p class="hint small">The link belongs to this browser. To answer on your phone with the same link, use “Use on another device” and open what it copies there. Keep that one private: it can answer for you.</p>
+          </div>
+          <p class="hint small" id="connectStatus">Off.</p>
           <div class="agent-cards">
             <article class="agent-card">
-              <div class="ac-head"><b>OpenAI Dots</b><span class="badge">Planned</span></div>
-              <p>Dots work in the background and ask before they write. Bud shows what your Dot is doing and you approve with a tap. Path: a ChatGPT plugin.</p>
+              <div class="ac-head"><b>Claude</b><span class="badge">Beta</span></div>
+              <p>Add your connector link as a custom connector in Claude. Claude then shows its progress on Bud and asks before it acts.</p>
+            </article>
+            <article class="agent-card">
+              <div class="ac-head"><b>ChatGPT and Dots</b><span class="badge">To test</span></div>
+              <p>Add the link as a custom connector in ChatGPT developer mode. Whether a Dot can use custom connectors is the next thing to test.</p>
             </article>
             <article class="agent-card">
               <div class="ac-head"><b>Meta Muse</b><span class="badge">Planned</span></div>
-              <p>Muse takes connectors from outside developers. A Bud connector lets Muse show its progress on Bud and ask for your OK.</p>
-            </article>
-            <article class="agent-card">
-              <div class="ac-head"><b>Claude and other MCP apps</b><span class="badge">Planned</span></div>
-              <p>A Bud MCP server gives any MCP-capable agent two tools: show a state on Bud, and ask you a question.</p>
+              <p>Muse takes connectors from outside developers through a review. Bud’s connector is the same link once Meta lets us in.</p>
             </article>
           </div>
         </section>
@@ -187,6 +208,7 @@
 <script src="link.js"></script>
 <script src="voice.js"></script>
 <script src="agent.js"></script>
+<script src="connect.js"></script>
 <script src="app.js"></script>
 </body>
 </html>

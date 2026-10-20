@@ -5,6 +5,7 @@
  * Modes: on a computer the app sits in a phone frame beside the emulator; on a phone the
  * app fills the screen; with #device the page is only the emulator, so another screen
  * (or another phone) can play Bud while this one runs the app.
+ * Other agents (ChatGPT, Claude, any MCP client) drive Bud through Bud Connect (connect.js).
  */
 (function () {
   'use strict';
@@ -13,6 +14,7 @@
   const A = window.BudAgent;
   const { Link } = window.BudLink;
   const { Ear, Voice, Sfx } = window.BudVoice;
+  const { Connect, newAppKey, validAppKey, cleanServer } = window.BudConnect;
   const $ = (s, r) => (r || document).querySelector(s);
   const $$ = (s, r) => Array.prototype.slice.call((r || document).querySelectorAll(s));
   const IN_PREVIEW = !!(window.claude && typeof window.claude.use === 'function');
@@ -36,6 +38,7 @@
     s = Object.assign({}, DEFAULTS, s && typeof s === 'object' ? s : {});
     if (!A.PROVIDERS[s.provider] || (s.provider === 'preview' && !IN_PREVIEW)) s.provider = DEFAULTS.provider;
     if (IN_PREVIEW && ['anthropic', 'openai', 'gemini'].includes(s.provider)) s.provider = 'preview';
+    s.connect = Object.assign({ on: false, server: '', key: '', seenBy: '' }, s.connect && typeof s.connect === 'object' ? s.connect : {});
     return s;
   })();
   const save = () => {
@@ -186,6 +189,7 @@
         hello();
       });
       hello();
+      if (!IN_PREVIEW) restartConnect();
       return;
     }
     keepAwake(false);
@@ -206,6 +210,7 @@
     link.room();
     $('#rigLink').textContent = 'Want Bud on a second screen? Open this page there and choose Settings, then “Make this screen the Bud”.';
     if (T) show(T.state, T.caption);
+    if (!IN_PREVIEW) restartConnect();
   }
   // The emulator is the same phone as the app, seen from the back and drawn in millimeters:
   // Bud is 44 mm across, centered below the camera (where the landing page puts it).
@@ -260,7 +265,10 @@
   mirror.set(Object.assign({}, BASE_CFG, lookCfg(S.look), { state: S.mic ? 'idle' : 'privacy' }));
   $('#appBud').style.setProperty('--shell', S.shell);
 
-  T = { state: 'idle', caption: '', busy: false, listening: false, pending: null, rec: null, typing: false, ctrl: null };
+  T = { state: 'idle', caption: '', busy: false, listening: false, waking: false, followUp: false, pending: null, rec: null, typing: false, ctrl: null };
+  // Bud Connect: agents' questions waiting their turn, the one on screen, answers on their way,
+  // and the reading aloud of a question (see below)
+  const ext = { asks: [], current: null, sending: new Set(), idle: 0, note: '', faceAt: 0, reading: 0, speaking: false };
 
   function show(state, caption, progress) {
     T.state = state;
@@ -272,7 +280,14 @@
     $('#statusSub').textContent = caption || (state === 'idle' ? idleHint() : state === 'privacy' ? 'Not listening' : '');
     link.emit({ type: 'show', state, caption: caption || '', progress: progress || 0, look: { pack: S.look, shell: S.shell }, mic: S.mic, timeout: S.timeout });
   }
-  const calm = () => show(S.mic ? 'idle' : 'privacy');
+  // Bud rests when nothing is going on, unless an agent's question is still open: then it stays pink for it.
+  function calm() {
+    if (ext.current && !T.busy && !T.listening && !T.followUp) {
+      T.pending = ext.current.decide;
+      return show('needsyou', ext.current.question);
+    }
+    show(S.mic ? 'idle' : 'privacy');
+  }
   const idleHint = () => (ear.mode === 'wake' ? 'Say “Hey Bud”, or tap Bud' : 'Tap Bud to talk');
 
   link.on((m) => {
@@ -289,13 +304,14 @@
 
   function input(kind) {
     if (kind === 'tap') {
-      if (T.pending) return T.pending(true);
+      if (T.followUp) return startTurn(); // Bud just asked you something: the tap is your reply
       if (T.listening) return stopListening();
+      if (T.pending && T.state === 'needsyou') return T.pending(true);
       if (T.busy) return;
       return startTurn();
     }
     if (kind === 'hold') {
-      if (T.pending) return T.pending(false);
+      if (T.pending && T.state === 'needsyou') return T.pending(false);
       return setMic(!S.mic);
     }
     if (kind === 'flip' && S.flip) toast('Flipped. Bud is awake.');
@@ -314,6 +330,11 @@
     },
     onWake() {
       // "Hey Bud": wake up and listen for the request
+      T.waking = true;
+      T.followUp = false;
+      // the ear can drop a half-heard "Hey Bud" without a word (page hidden, mic off): don't wait forever
+      clearTimeout(T.wakeT);
+      T.wakeT = setTimeout(abandonWake, 12000);
       Sfx.listen();
       $('#say').value = '';
       go('home');
@@ -323,20 +344,39 @@
       $('#say').value = text;
     },
     onHeard(text, how) {
+      T.waking = false;
+      clearTimeout(T.wakeT);
       if (text) {
         Sfx.heard();
+        const said = T.pending ? answerWord(text) : null;
+        if (said !== null) {
+          $('#say').value = '';
+          if (S.mic && !T.busy) ear.resume();
+          return T.pending(said);
+        }
+        if (ext.current && T.pending === ext.current.decide) {
+          // an agent's question is up: say yes or no, or type a request (a spoken one could be the question read back)
+          $('#say').value = '';
+          toast('Answer the question on Bud first: say yes or no, or tap.');
+          if (S.mic && !T.busy && !ext.speaking) ear.resume();
+          return;
+        }
         submit(text);
       } else if (how === 'tap') {
         if (ear.blocked) listenTyping();
         else {
           calm();
           ear.resume();
+          nextAsk();
         }
       }
     },
     onWakeTimeout() {
+      T.waking = false;
+      clearTimeout(T.wakeT);
       $('#say').value = '';
       if (T.state === 'listening' && !T.busy) calm();
+      nextAsk();
     },
     onError(code) {
       if (!touched && code === 'not-allowed') return; // some browsers open the mic only after a tap: try again then
@@ -350,7 +390,17 @@
     },
   });
 
+  // "Hey Bud" was heard but the request never came (or the ear was paused): let things go on.
+  function abandonWake() {
+    if (!T.waking) return;
+    T.waking = false;
+    clearTimeout(T.wakeT);
+    if (T.state === 'listening' && !T.busy && !T.listening) calm();
+    nextAsk();
+  }
+
   function startTurn() {
+    T.followUp = false;
     if (!S.mic) {
       show('privacy', 'Mic is off');
       toast('The mic is off. Hold Bud, or turn it on in Settings.');
@@ -368,6 +418,8 @@
 
   function listenTyping() {
     T.typing = true;
+    T.followUp = false;
+    typed();
     show('listening', 'Type what you want');
     const box = $('#say');
     box.focus();
@@ -400,10 +452,12 @@
 
   function approve(req) {
     return new Promise((resolve) => {
+      let over = false;
       const card = addAsk(req, (ok) => finish(ok));
       function finish(ok) {
-        if (!T.pending) return;
-        T.pending = null;
+        if (over) return;
+        over = true;
+        if (T.pending === finish) T.pending = null;
         card.finish(ok);
         show('working', ok ? 'On it' : 'Okay, not doing that');
         resolve(ok);
@@ -428,6 +482,8 @@
     text = String(text || '').trim();
     if (!text || T.busy) return;
     T.busy = true;
+    T.followUp = false;
+    let asked = false;
     T.typing = false;
     $('#say').value = '';
     addMsg('from-you', text);
@@ -454,7 +510,8 @@
       });
       addMsg('from-bud', reply);
       await speak(reply);
-      if (/\?\s*$/.test(reply)) show('needsyou', 'Your turn');
+      asked = /\?\s*$/.test(reply);
+      if (asked) show('needsyou', 'Your turn');
       else if (wrote) {
         show('done', 'Done');
         Sfx.done();
@@ -471,8 +528,27 @@
       setTimeout(() => T.state === 'confused' && calm(), 2600);
     } finally {
       T.busy = false;
-      if (S.mic) ear.resume();
+      if (S.mic && !ext.speaking) ear.resume();
+      if (asked) holdForReply();
+      else if (ext.current) calm();
+      else nextAsk();
     }
+  }
+
+  // Bud just asked you something ("Which one?"). For a few seconds the next tap answers Bud,
+  // not an agent's question; then any open agent question comes back.
+  function holdForReply() {
+    T.followUp = true;
+    if (ext.current && T.pending === ext.current.decide) T.pending = null;
+    clearTimeout(T.followT);
+    T.followT = setTimeout(() => {
+      if (!T.followUp || T.busy || T.listening || T.typing) return;
+      T.followUp = false;
+      if (ext.current) {
+        calm();
+        Sfx.needs();
+      } else nextAsk();
+    }, 8000);
   }
 
   function setMic(on) {
@@ -480,7 +556,10 @@
     save();
     $('#setMic').checked = on;
     if (on) ear.resume();
-    else ear.pause();
+    else {
+      ear.pause();
+      T.waking = false;
+    }
     show(on ? 'idle' : 'privacy', on ? 'Mic back on' : 'Mic off');
     toast(on ? 'Mic on. Tap Bud to talk.' : 'Mic off. Bud is not listening.');
   }
@@ -492,12 +571,23 @@
     const page = $('#page-home');
     page.scrollTop = page.scrollHeight;
   }
+  // Keep the feed to its last couple hundred lines, but never drop a question still waiting.
+  function trimFeed() {
+    let extra = feed.childElementCount - 200;
+    for (const el of [...feed.children]) {
+      if (extra <= 0) break;
+      if (el.matches('.ask:not(.done)')) continue;
+      el.remove();
+      extra--;
+    }
+  }
   function addMsg(who, text, err) {
     $('#tryCard').hidden = true;
     const el = document.createElement('div');
     el.className = `msg ${who}${err ? ' err' : ''}`;
     el.textContent = text;
     feed.append(el);
+    trimFeed();
     scrollFeed();
   }
   function addAct(text, st) {
@@ -507,6 +597,7 @@
     el.querySelector('.led').style.setProperty('--c', tintOf(st));
     el.append(text.replace(/…$/, ''));
     feed.append(el);
+    trimFeed();
     scrollFeed();
   }
   function addAsk(req, decide) {
@@ -526,32 +617,42 @@
         el.classList.add('done');
         const r = el.querySelector('.ask-r');
         r.hidden = false;
-        r.textContent = ok ? 'Approved' : 'Not now';
+        r.textContent = typeof ok === 'string' ? ok : ok ? 'Approved' : 'Not now';
       },
     };
   }
 
   /* ------------------------------------------------------------- composer */
 
+  // A reply that is only a yes or a no answers the question Bud is asking; anything else is a request.
+  const YES = /^(yes|yep|yeah|ok|okay|sure|do it|go ahead|approve)(,? (please|thanks|thank you))?\s*[.!]*$/i;
+  const NO = /^(no|nope|not now|cancel|stop|don[’']?t)(,? (thanks|thank you))?\s*[.!]*$/i;
+  const answerWord = (text) => (YES.test(text.trim()) ? true : NO.test(text.trim()) ? false : null);
+
   $('#composer').addEventListener('submit', (e) => {
     e.preventDefault();
     const text = $('#say').value;
     if (T.listening) return stopListening();
-    if (T.pending && /^(yes|yep|ok|okay|sure|do it|go ahead)\b/i.test(text.trim())) {
+    const said = T.pending ? answerWord(text) : null;
+    if (said !== null) {
       $('#say').value = '';
-      return T.pending(true);
-    }
-    if (T.pending && /^(no|nope|not now|cancel|stop)\b/i.test(text.trim())) {
-      $('#say').value = '';
-      return T.pending(false);
+      return T.pending(said);
     }
     submit(text);
   });
+  // A typing turn holds agents' questions back only while you're actually typing.
+  function typed() {
+    T.typedAt = Date.now();
+    clearTimeout(T.typeT);
+    T.typeT = setTimeout(nextAsk, 30500);
+  }
+  $('#say').addEventListener('input', typed);
   $('#say').addEventListener('blur', () => {
     if (T.typing && !$('#say').value.trim() && !T.busy) {
       T.typing = false;
       if (T.state === 'listening') calm();
     }
+    setTimeout(nextAsk, 0); // anything an agent asked while you typed
   });
   $('#micBtn').addEventListener('click', () => {
     if (T.listening) return stopListening();
@@ -799,13 +900,15 @@
   );
   // a hidden page stops listening; it picks up again when it comes back
   document.addEventListener('visibilitychange', () => {
-    if (document.hidden) ear.pause();
-    else if (S.mic && !T.busy) ear.resume();
+    if (document.hidden) {
+      ear.pause();
+      abandonWake();
+    } else if (S.mic && !T.busy && !ext.speaking) ear.resume();
   });
   $('#resetBtn').addEventListener('click', () => {
     A.World.reset();
     A.reset();
-    feed.innerHTML = '';
+    for (const el of [...feed.children]) if (!el.matches('.ask:not(.done)')) el.remove();
     calm();
     toast('Demo data reset.');
   });
@@ -821,6 +924,318 @@
     }
   });
 
+  /* ----------------------------------------------------------- Bud Connect */
+
+  // Your other agents reach Bud through a Bud Connect server (connect/): bud_show puts their
+  // state on Bud, bud_ask turns Bud pink and waits for your tap. Your own turns come first:
+  // while Bud is busy with one, their faces wait and their questions queue.
+  const CONNECT_SERVER = 'https://bud-connect.meetbud.workers.dev'; // the hosted server (connect/worker.mjs)
+  const CLOSED = { expired: 'Expired', withdrawn: 'Withdrawn', gone: 'No longer open', off: 'Bud Connect off', device: 'This screen is Bud now', moved: 'Link changed' };
+  const connect = new Connect({
+    onState: paintConnect,
+    onHello(d) {
+      // the server's open questions are the truth: drop any held here that it no longer has
+      const open = new Set((d.asks || []).map((a) => a.id));
+      ext.asks = ext.asks.filter((a) => open.has(a.id));
+      for (const id of ext.sending) if (!open.has(id)) ext.sending.delete(id); // settled while we were away
+      if (ext.current && !open.has(ext.current.id)) ext.current.close('gone');
+      for (const a of d.asks || []) if (!knownAsk(a.id)) ext.asks.push(arm(a));
+      // catch up on a face this app never showed; one from before this page opened only goes in the feed
+      const f = d.face;
+      if (f && f.state !== 'idle' && !(f.at <= ext.faceAt)) externalShow(f, !ext.faceAt && ['done', 'hello', 'love'].includes(f.state));
+      nextAsk();
+    },
+    onShow: externalShow,
+    onAsk(a) {
+      if (knownAsk(a.id)) return;
+      ext.asks.push(arm(a));
+      nextAsk();
+    },
+    onSettled({ id, answer }) {
+      ext.sending.delete(id);
+      ext.asks = ext.asks.filter((a) => a.id !== id);
+      if (ext.current && ext.current.id === id) ext.current.close(answer);
+    },
+  });
+  const arm = (a) => Object.assign(a, { until: Date.now() + (a.ttl || 0) }); // its expiry, by this device's clock
+  // shown, queued, or answered with the answer still on its way
+  const knownAsk = (id) => (ext.current && ext.current.id === id) || ext.asks.some((a) => a.id === id) || ext.sending.has(id);
+  // you are in the middle of something: agents' faces and questions wait
+  const typingNow = () => T.typing && document.activeElement === $('#say') && Date.now() - (T.typedAt || 0) < 30000;
+  const ownTurn = () => T.busy || T.pending || T.listening || T.waking || T.followUp || typingNow();
+  // an agent that goes quiet should not leave Bud busy
+  function settleLater(state, ms) {
+    clearTimeout(ext.idle);
+    ext.idle = setTimeout(() => !ownTurn() && T.state === state && calm(), ms);
+  }
+
+  function externalShow(f, quiet) {
+    if (!f || ownTurn()) return;
+    if (f.at) ext.faceAt = Math.max(ext.faceAt, f.at);
+    const note = `${f.source || 'Your agent'}: ${f.caption || LABEL[f.state] || f.state}`;
+    if (f.state !== 'idle' && note !== ext.note) addAct(note, f.state);
+    ext.note = note;
+    if (quiet) return;
+    show(f.state, f.caption || '', f.progress == null ? 0 : f.progress / 100);
+    if (f.state === 'done') {
+      Sfx.done();
+      settleLater(f.state, 2800);
+    } else if (f.state === 'hello' || f.state === 'love') settleLater(f.state, 3000);
+    else if (f.state !== 'idle') settleLater(f.state, 90000);
+  }
+
+  function nextAsk() {
+    if (ext.current || ownTurn()) return;
+    let a = ext.asks.shift();
+    while (a && a.until <= Date.now()) a = ext.asks.shift(); // ran out while it waited its turn
+    if (!a) return;
+    const who = a.source || 'Your agent';
+    const card = addAsk({ title: a.question, detail: a.detail ? `${who}: ${a.detail}` : `From ${who}`, verb: a.verb || 'Approve' }, (ok) => decide(ok));
+    const entry = {
+      id: a.id,
+      question: a.question,
+      decide,
+      timer: setTimeout(() => entry.close('expired'), Math.max(0, a.until - Date.now())),
+      close(why) {
+        if (ext.current !== entry) return;
+        clearTimeout(entry.timer);
+        stopReading(entry);
+        if (T.pending === decide) T.pending = null;
+        ext.current = null;
+        card.finish(CLOSED[why] || 'Answered elsewhere');
+        if (!T.busy && !T.listening) calm();
+        nextAsk();
+      },
+    };
+    async function decide(ok) {
+      if (ext.current !== entry) return;
+      clearTimeout(entry.timer);
+      stopReading(entry);
+      if (T.pending === decide) T.pending = null;
+      ext.current = null;
+      card.finish(ok);
+      if (!T.busy) {
+        if (ok) {
+          show('working', 'On it');
+          settleLater('working', 90000);
+        } else calm();
+      }
+      ext.sending.add(a.id);
+      const sent = await connect.answer(a.id, ok);
+      const unsettled = ext.sending.delete(a.id); // false if the server said it settled meanwhile
+      if (sent !== 'ok') {
+        const undo = !T.busy && T.state === 'working' && T.caption === 'On it';
+        if (sent === 'closed') {
+          card.finish(CLOSED.gone);
+          toast(`That question had already closed, so ${who} did not get your answer.`);
+        } else if (!unsettled) {
+          card.finish('Answered'); // it settled after all (this answer, or one from another screen)
+        } else if (a.until > Date.now() && !knownAsk(a.id)) {
+          // still open on the server: bring it back so you can answer again
+          card.finish('Not sent');
+          ext.asks.unshift(a);
+          toast(`Could not reach Bud Connect. ${who}’s question is back, so you can try again.`);
+        } else {
+          card.finish(CLOSED.expired);
+          toast(`Could not reach Bud Connect, and ${who}’s question has expired.`);
+        }
+        if (undo) calm();
+      }
+      nextAsk();
+    }
+    ext.current = entry;
+    T.pending = decide;
+    show('needsyou', a.question);
+    Sfx.needs();
+    readAloud(entry);
+  }
+
+  // Reading an agent's question aloud. Bud's ear stays off until that reading ends, so it never
+  // hears an agent's words as a request, and a reading that was cut short never turns it back on.
+  function readAloud(entry) {
+    if (!S.speak) return;
+    const mine = ++ext.reading;
+    entry.reading = mine;
+    ext.speaking = true;
+    ear.pause();
+    const back = () => {
+      if (ext.reading !== mine) return;
+      ext.speaking = false;
+      if (S.mic && !T.busy && !document.hidden) ear.resume();
+    };
+    Promise.resolve(Voice.say(entry.question, voiceOpts())).then(back, back);
+  }
+  function stopReading(entry) {
+    if (!entry.reading || ext.reading !== entry.reading || !ext.speaking) return;
+    ext.reading++;
+    ext.speaking = false;
+    Voice.stop();
+    // back on, unless the next question has started reading by then
+    setTimeout(() => !ext.speaking && S.mic && !T.busy && !document.hidden && ear.resume(), 0);
+  }
+
+  const CONNECT_NOTE = {
+    off: 'Off.',
+    'needs-server': 'Add the Bud Connect server address.',
+    'bad-server': 'That server address doesn’t look right. It should look like https://bud-connect.example.workers.dev.',
+    'needs-https': 'From this page, the server address has to start with https://.',
+    connecting: 'Connecting…',
+    live: 'On. Agents with your link can show their work on Bud and ask you first.',
+    'live-new': 'On, with a new link for this browser. Copy it into your agents: links made in another browser (or before this one’s data was cleared) don’t reach it.',
+    retrying: 'Can’t reach the server right now. Retrying…',
+    unsupported: 'This browser can’t keep a live connection open.',
+    device: 'This screen is Bud now. Bud Connect runs on the screen with the app.',
+  };
+  function paintConnect(state) {
+    $('#connectOn').checked = !!S.connect.on;
+    $('#connectConfig').hidden = !S.connect.on;
+    let note = S.connect.on && mode === 'device' ? 'device' : state || connect.state;
+    if (note === 'live' && S.connect.copied === false) note = 'live-new';
+    $('#connectStatus').textContent = CONNECT_NOTE[note] || '';
+    connect.link().then((url) => {
+      $('#connectUrl').value = url;
+      // a short ID, to check against the link your agents have
+      $('#connectId').textContent = url ? `Link ID ${url.split('/mcp/bc_')[1].slice(0, 6)}` : '';
+    });
+  }
+  // Writes only the Bud Connect part of the stored settings, so following another tab never
+  // writes this tab's older copy of everything else over the newer one.
+  function saveConnect() {
+    try {
+      const stored = JSON.parse(localStorage.getItem(SKEY)) || {};
+      if (typeof stored !== 'object' || Array.isArray(stored)) return save();
+      stored.connect = S.connect;
+      localStorage.setItem(SKEY, JSON.stringify(stored));
+    } catch (e) {
+      save();
+    }
+  }
+  // Questions from a room this app is leaving can no longer be answered from here.
+  function dropAsks(why) {
+    ext.asks = [];
+    if (ext.current) ext.current.close(why);
+  }
+  function restartConnect() {
+    if (!S.connect.key && S.connect.on && mode === 'app') {
+      useKey(newAppKey());
+      saveConnect();
+      // ask the browser to keep this key: losing it quietly breaks the link agents hold
+      if (navigator.storage && navigator.storage.persist) navigator.storage.persist().catch(() => {});
+    }
+    const was = { server: connect.server, key: connect.key };
+    connect.configure({ server: S.connect.server || CONNECT_SERVER, key: S.connect.key });
+    const live = S.connect.on && mode === 'app';
+    if (!live) dropAsks(mode === 'device' ? 'device' : 'off');
+    else if (connect.server !== was.server || connect.key !== was.key) dropAsks('moved');
+    if (live) {
+      connect.start();
+      // remember which server has seen this key: a different server gets a new one (see below)
+      if (connect.server && !connect.problem && S.connect.seenBy !== connect.server) {
+        S.connect.seenBy = connect.server;
+        saveConnect();
+      }
+    } else connect.stop();
+    paintConnect();
+  }
+  function useKey(key) {
+    S.connect.key = key;
+    S.connect.seenBy = '';
+    S.connect.copied = false; // until it's copied, the status says agents don't have it yet
+  }
+
+  // A link from "Use on another device" carries the app key in the fragment, which browsers never send anywhere.
+  const carried = /^#bk=([A-Za-z0-9_-]+)(?:&server=([^&]+))?$/.exec(location.hash);
+  if (carried) {
+    history.replaceState(null, '', location.pathname + location.search);
+    let server = '';
+    try {
+      server = carried[2] ? decodeURIComponent(carried[2]) : '';
+    } catch (e) {
+      server = null;
+    }
+    if (server && !cleanServer(server)) server = null;
+    if (validAppKey(carried[1]) && server !== null && !IN_PREVIEW && (carried[1] === S.connect.key || window.confirm('Use the Bud Connect link from your other device here? It replaces this device’s link.'))) {
+      useKey(carried[1]);
+      S.connect.on = true;
+      S.connect.server = server; // the link's own server ('' is the hosted one), never this device's
+      saveConnect();
+      toast('This device now uses your Bud Connect link.');
+    }
+  }
+
+  $('#connectServer').value = S.connect.server || CONNECT_SERVER;
+  $('#connectOn').onchange = (e) => {
+    S.connect.on = e.target.checked;
+    saveConnect();
+    restartConnect();
+  };
+  $('#connectServer').onchange = (e) => {
+    S.connect.server = e.target.value.trim();
+    // a key one server has seen is never sent to another one, so a new server means a new link
+    const next = cleanServer(S.connect.server || CONNECT_SERVER);
+    if (next && S.connect.seenBy && next !== S.connect.seenBy) {
+      useKey(newAppKey());
+      toast('New server, new connector link. Add it to your agents again.');
+    }
+    saveConnect();
+    restartConnect();
+  };
+  $('#connectCopy').onclick = async () => {
+    const url = $('#connectUrl').value;
+    if (!url) return toast('Add the server address first.');
+    try {
+      await navigator.clipboard.writeText(url);
+      toast('Connector link copied.');
+    } catch (e) {
+      $('#connectUrl').select();
+      toast('Select the link and copy it.');
+    }
+    if (S.connect.copied === false) {
+      S.connect.copied = true;
+      saveConnect();
+      paintConnect();
+    }
+  };
+  $('#connectNew').onclick = () => {
+    useKey(newAppKey());
+    saveConnect();
+    restartConnect();
+    toast('New link made. The old one no longer works, so add this one to your agents.');
+  };
+  $('#connectMove').onclick = async () => {
+    const server = S.connect.server ? cleanServer(S.connect.server) : '';
+    const url = `${location.origin}${location.pathname}#bk=${S.connect.key}${server && server !== CONNECT_SERVER ? `&server=${encodeURIComponent(server)}` : ''}`;
+    try {
+      await navigator.clipboard.writeText(url);
+      toast('Copied. Open it on your other device to use this same link there. Keep it private.');
+    } catch (e) {
+      window.prompt('Open this on your other device. Keep it private: it can answer for you.', url);
+    }
+  };
+  // Another tab changed the link: follow it, so a stale tab never writes the old key back.
+  window.addEventListener('storage', (e) => {
+    if (e.key !== SKEY || !e.newValue || IN_PREVIEW) return;
+    let c = null;
+    try {
+      c = JSON.parse(e.newValue).connect;
+    } catch (err) {
+      return;
+    }
+    if (!c || typeof c !== 'object' || (c.key === S.connect.key && c.on === S.connect.on && c.server === S.connect.server)) return;
+    S.connect = Object.assign({ on: false, server: '', key: '', seenBy: '' }, c);
+    $('#connectServer').value = S.connect.server || CONNECT_SERVER;
+    restartConnect();
+  });
+  // Phones drop sockets in the background: check the link when the page comes back.
+  const revive = () => !document.hidden && connect.revive();
+  document.addEventListener('visibilitychange', revive);
+  window.addEventListener('pageshow', revive);
+  window.addEventListener('online', revive);
+  if (IN_PREVIEW) {
+    $('#connectOn').disabled = true;
+    $('#connectStatus').textContent = 'Open the Bud app on its own page to use Bud Connect.';
+  } else restartConnect();
+
   if (!WIDE) $('#deviceText').textContent = 'No Bud nearby';
   setMode(DEVICE_MODE ? 'device' : 'app');
   calm();
@@ -833,7 +1248,8 @@
     $('#rigTap').onclick = () => dev.input('tap');
     $('#rigHold').onclick = () => dev.input('hold');
     document.addEventListener('keydown', (e) => {
-      if (e.target && e.target.closest && e.target.closest('input, textarea, select')) return;
+      if (e.target && e.target.closest && e.target.closest('input, textarea, select, button, a, [role=button], [role=switch], [contenteditable]')) return;
+      if (e.repeat || e.metaKey || e.ctrlKey || e.altKey) return;
       if (e.key === ' ') {
         e.preventDefault();
         dev.input('tap');
@@ -842,5 +1258,5 @@
     });
   }
 
-  window.BudApp = { show, submit, input, settings: S, device: () => device };
+  window.BudApp = { show, submit, input, settings: S, device: () => device, connect, busy: () => T.busy };
 })();
