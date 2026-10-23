@@ -45,6 +45,7 @@
               <li>When Bud glows pink, it needs your OK. Tap Bud to approve, or hold it for “not now”.</li>
               <li>Have a second screen? Open this same page there and choose <b>Settings › Make this screen the Bud</b>.</li>
             </ol>
+            <p class="try-demo" id="tryDemo" hidden>This is the demo brain, which only knows a few requests. For the real Bud, open <b>Agents › Bud</b> and enter the passcode.</p>
           </div>
           <div class="feed" id="feed" aria-live="polite"></div>
           <div class="suggest" id="suggest" aria-label="Try saying"></div>
@@ -64,7 +65,7 @@
               <label for="provModel">Model</label>
               <input id="provModel" type="text" autocomplete="off" spellcheck="false">
             </div>
-            <p class="hint small">Your key stays in this browser and goes only to that provider. For a real launch, keys live on Bud’s server, not in the app.</p>
+            <p class="hint small" id="provNote">Your key stays in this browser and goes only to that provider. For a real launch, keys live on Bud’s server, not in the app.</p>
           </div>
           <h2>Your agents</h2>
           <p class="hint">Use ChatGPT, Claude or another agent? Connect it to Bud: it shows its work on Bud’s face and waits for your tap before it acts.</p>

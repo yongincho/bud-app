@@ -282,37 +282,85 @@
     return data;
   }
 
+  // Claude's tool loop, shared by your own key (straight to Anthropic) and Bud's hosted brain
+  // (through the Bud server, which adds the key). send(request) returns the Messages API response.
+  // Resolves { text, claude }: the reply, and this turn's messages for the next turn to build on
+  // (its tool calls and results, so "8:30" still knows which restaurant). Thinking blocks go back
+  // unchanged within the turn and are left out of what is kept: later turns replay none, which the
+  // API allows (blocks may only go from the front), and old turns can then be trimmed freely.
+  async function claudeTurn(history, ctx, send) {
+    const system = RULES(); // once per turn: this turn's thinking is tied to an unchanged prefix
+    const tools = TOOLS.map((t) => ({ name: t.name, description: t.description, input_schema: t.schema }));
+    // earlier turns, oldest dropped first (whole turns) while the conversation is too big to send
+    const turns = history.map((m) => (m.claude ? m.claude : [{ role: m.role, content: m.content }]));
+    const size = () => turns.reduce((n, t) => n + JSON.stringify(t).length, 0);
+    while (turns.length > 1 && (turns.flat().length > 40 || size() > 40000)) {
+      turns.shift();
+      if (turns.length > 1 && turns[0][0].role !== 'user') turns.shift();
+    }
+    const msgs = turns.flat();
+    const start = msgs.length;
+    const finish = (text) => {
+      const kept = msgs
+        .slice(start)
+        .map((m) => (m.role === 'assistant' ? { role: 'assistant', content: m.content.filter((b) => b.type === 'text' || b.type === 'tool_use') } : m));
+      kept.push({ role: 'assistant', content: text });
+      // an assistant message after the last tool results, or straight after the user's words
+      return { text, claude: kept.filter((m) => typeof m.content === 'string' || m.content.length) };
+    };
+    for (let round = 0; round < 6; round++) {
+      const data = await send({ system, messages: msgs, tools });
+      if (data.stop_reason === 'refusal') return finish('I can’t help with that one. Want to try something else?');
+      // a reply cut off mid-way is never acted on: its tool calls may be incomplete
+      if (data.stop_reason === 'max_tokens') return finish('Sorry, that got cut off. Can you say it again?');
+      const uses = (data.content || []).filter((b) => b.type === 'tool_use');
+      if (!uses.length) return finish((data.content || []).filter((b) => b.type === 'text').map((b) => b.text).join(' ').trim() || 'Okay.');
+      // within the turn the whole response goes back unchanged, thinking blocks included
+      msgs.push({ role: 'assistant', content: data.content });
+      const results = [];
+      for (const u of uses) {
+        let out;
+        try {
+          out = await runTool(u.name, u.input, ctx);
+        } catch (e) {
+          out = { error: e.message };
+        }
+        results.push({ type: 'tool_result', tool_use_id: u.id, content: JSON.stringify(out) });
+      }
+      msgs.push({ role: 'user', content: results });
+      ctx.onStatus('thinking');
+    }
+    return finish('That took more steps than I can handle at once. Can you try a simpler ask?');
+  }
+  // Effort and server-side fallbacks for current models; older ones get a plain request.
+  const claudeExtras = (model) =>
+    /^claude-(opus-5|fable-5|sonnet-5-5|haiku-5-5)/.test(model)
+      ? Object.assign({ output_config: { effort: 'low' } }, /^claude-(opus-5|fable-5|sonnet-5-5)/.test(model) ? { fallbacks: 'default' } : {})
+      : {};
+
   PROVIDERS.anthropic = {
     label: 'Claude API',
     keyName: 'Anthropic API key',
-    defaultModel: 'claude-sonnet-5-5',
-    async turn(history, ctx, cfg) {
-      const msgs = history.map((m) => ({ role: m.role, content: m.content }));
-      const tools = TOOLS.map((t) => ({ name: t.name, description: t.description, input_schema: t.schema }));
-      for (let round = 0; round < 6; round++) {
-        const data = await postJSON(
-          'https://api.anthropic.com/v1/messages',
-          { model: cfg.model || this.defaultModel, max_tokens: 400, system: RULES(), messages: msgs, tools },
-          { 'x-api-key': cfg.key, 'anthropic-version': '2023-06-01', 'anthropic-dangerous-direct-browser-access': 'true' },
-          ctx.signal
-        );
-        const uses = (data.content || []).filter((b) => b.type === 'tool_use');
-        if (!uses.length) return (data.content || []).filter((b) => b.type === 'text').map((b) => b.text).join(' ').trim();
-        msgs.push({ role: 'assistant', content: data.content });
-        const results = [];
-        for (const u of uses) {
-          let out;
-          try {
-            out = await runTool(u.name, u.input, ctx);
-          } catch (e) {
-            out = { error: e.message };
-          }
-          results.push({ type: 'tool_result', tool_use_id: u.id, content: JSON.stringify(out) });
-        }
-        msgs.push({ role: 'user', content: results });
-        ctx.onStatus('thinking');
-      }
-      return 'That took more steps than I can handle at once. Can you try a simpler ask?';
+    defaultModel: 'claude-opus-5-5',
+    turn(history, ctx, cfg) {
+      const model = cfg.model || this.defaultModel;
+      const extras = claudeExtras(model);
+      const headers = { 'x-api-key': cfg.key, 'anthropic-version': '2023-06-01', 'anthropic-dangerous-direct-browser-access': 'true' };
+      if (extras.fallbacks) headers['anthropic-beta'] = 'server-side-fallback-2026-07-01';
+      return claudeTurn(history, ctx, (req) => postJSON('https://api.anthropic.com/v1/messages', Object.assign({ model, max_tokens: 16000 }, extras, req), headers, ctx.signal));
+    },
+  };
+
+  // Bud's own brain: Claude on the Bud server, which holds the key. The app only needs the passcode.
+  PROVIDERS.bud = {
+    label: 'Bud (hosted Claude)',
+    note: 'Claude Opus 5.5 on Bud’s server. No API key here, just the Bud passcode.',
+    keyName: 'Bud passcode',
+    fixedModel: true,
+    defaultModel: 'claude-opus-5-5',
+    turn(history, ctx, cfg) {
+      if (!cfg.server) throw new Error('No Bud server is set.');
+      return claudeTurn(history, ctx, (req) => postJSON(`${cfg.server}/brain/messages`, req, { 'x-bud-pass': cfg.key }, ctx.signal));
     },
   };
 
@@ -439,7 +487,7 @@
       }
       if (/^(hi|hey|hello)\b/.test(s)) return 'Hey! What can I do for you?';
       if (/thank/.test(s)) return 'Anytime!';
-      return 'In this demo I can move meetings, book tables, set reminders, send texts and check your calendar. Try one of those.';
+      return 'I’m the demo brain, so I only know a few things: moving meetings, booking tables, reminders, texts and your calendar. For the real Bud, pick Bud in Agents and enter the passcode.';
     },
   };
 
@@ -459,16 +507,18 @@
       this.history.push({ role: 'user', content: String(text) });
       ctx.wrote = false;
       ctx.onStatus('thinking');
-      let reply;
+      let out;
       try {
-        reply = await prov.turn(this.history, ctx, ctx.cfg || {});
+        out = await prov.turn(this.history, ctx, ctx.cfg || {});
       } catch (e) {
         this.history.pop();
         throw e;
       }
-      reply = String(reply || '').replace(/[*_#`]/g, '').trim() || 'Done.';
-      this.history.push({ role: 'assistant', content: reply });
-      if (this.history.length > 24) this.history.splice(0, this.history.length - 24);
+      // Claude's brains also hand back the turn's tool calls and results, kept for its next turns
+      const claude = out && typeof out === 'object' ? out.claude : null;
+      const reply = String((out && typeof out === 'object' ? out.text : out) || '').replace(/[*_#`]/g, '').trim() || 'Done.';
+      this.history.push(claude ? { role: 'assistant', content: reply, claude } : { role: 'assistant', content: reply });
+      if (this.history.length > 24) this.history.splice(0, this.history.length - 24); // whole turns, from the front
       return { reply, wrote: ctx.wrote };
     },
     reset() {

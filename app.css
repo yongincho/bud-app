@@ -217,3 +217,5 @@ svg { display: block; }
 .toast { position: fixed; left: 50%; bottom: calc(24px + env(safe-area-inset-bottom, 0px)); transform: translate(-50%, 20px); opacity: 0; padding: 10px 16px; border-radius: 14px; background: rgba(30, 31, 36, 0.95); border: 1px solid var(--line); font-size: 14px; transition: opacity 0.25s, transform 0.25s var(--ease); pointer-events: none; z-index: 9; max-width: calc(100vw - 32px); }
 .toast.on { opacity: 1; transform: translate(-50%, 0); }
 @media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation-duration: 0.01ms !important; transition-duration: 0.01ms !important; } }
+
+.try-demo { margin: 10px 0 0; color: var(--ink-2); font-size: 14px; }

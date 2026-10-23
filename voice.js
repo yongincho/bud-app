@@ -226,16 +226,18 @@
         .sort((a, b) => rank(b, want) - rank(a, want));
     },
     pick,
-    /** Speak, then resolve. opts: { style, voice, engine ('system' or 'openai'), key, onFallback(error) } */
+    /** Speak, then resolve. opts: { style, voice, engine ('system', 'openai' with your key, or 'bud'
+     *  through the Bud server with the passcode), key, server, onFallback(error) } */
     say(text, opts) {
       opts = opts || {};
       text = sayable(text);
       if (!text) return Promise.resolve();
       // each reading replaces the one before; one still downloading must never play late
       const gen = (this.gen = (this.gen || 0) + 1);
-      if (this.audio) this.audio.pause();
-      if (opts.engine === 'openai' && opts.key)
-        return this._openai(text, opts, gen).catch((e) => {
+      this._cut();
+      const natural = (opts.engine === 'openai' || (opts.engine === 'bud' && opts.server)) && opts.key;
+      if (natural)
+        return this._natural(text, opts, gen).catch((e) => {
           if (gen !== this.gen) return;
           if (opts.onFallback) opts.onFallback(e);
           return this._system(text, opts);
@@ -248,6 +250,17 @@
         if (root.speechSynthesis) root.speechSynthesis.cancel();
       } catch (e) {
         /* nothing playing */
+      }
+      this._cut();
+    },
+    // Ends whatever natural-voice audio is playing, so its promise settles.
+    _cut() {
+      if (this.source) {
+        try {
+          this.source.stop();
+        } catch (e) {
+          /* already stopped */
+        }
       }
       if (this.audio) this.audio.pause();
     },
@@ -283,27 +296,60 @@
         guard = setTimeout(fin, 2500 + text.length * 90);
       });
     },
-    async _openai(text, opts, gen) {
+    // OpenAI's natural voice: with your own key, or through the Bud server (which holds the key).
+    async _natural(text, opts, gen) {
       const st = STYLES[opts.style] || STYLES.bright;
-      const r = await fetch('https://api.openai.com/v1/audio/speech', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${opts.key}` },
-        body: JSON.stringify({ model: 'gpt-4o-mini-tts', voice: st.openai, input: text, instructions: st.how, response_format: 'mp3' }),
-      });
-      if (!r.ok) throw new Error(`OpenAI voice answered ${r.status}`);
+      const r =
+        opts.engine === 'bud'
+          ? await fetch(`${opts.server}/brain/voice`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json', 'x-bud-pass': opts.key },
+              body: JSON.stringify({ text, voice: st.openai, instructions: st.how }),
+            })
+          : await fetch('https://api.openai.com/v1/audio/speech', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${opts.key}` },
+              body: JSON.stringify({ model: 'gpt-4o-mini-tts', voice: st.openai, input: text, instructions: st.how, response_format: 'mp3' }),
+            });
+      if (!r.ok) throw Object.assign(new Error(`The natural voice answered ${r.status}`), { status: r.status });
       const blob = await r.blob();
       if (gen !== this.gen) return; // stopped, or another reading started, while this downloaded
+      // Played through the sound engine Bud's first tap unlocked: phones (Safari above all) refuse
+      // an audio element that starts after a network wait, but a running AudioContext may play.
+      const ac = Sfx.ctx();
+      if (ac && ac.state === 'running') {
+        const buffer = await ac.decodeAudioData(await blob.arrayBuffer());
+        if (gen !== this.gen) return;
+        return new Promise((res) => {
+          const src = ac.createBufferSource();
+          src.buffer = buffer;
+          src.connect(ac.destination);
+          src.onended = () => {
+            if (this.source === src) this.source = null;
+            res();
+          };
+          this.source = src;
+          src.start();
+        });
+      }
       const url = URL.createObjectURL(blob);
       return new Promise((res, rej) => {
         const a = new Audio(url);
         this.audio = a;
+        let over = false;
         const fin = () => {
+          if (over) return;
+          over = true;
+          clearTimeout(guard);
           URL.revokeObjectURL(url);
           res();
         };
-        a.onended = fin;
-        a.onerror = fin;
+        // ended, failed, or paused (a call, AirPods out, another reading): either way, done
+        a.onended = a.onerror = a.onpause = fin;
+        const guard = setTimeout(fin, 4000 + text.length * 120);
         a.play().catch((e) => {
+          over = true;
+          clearTimeout(guard);
           URL.revokeObjectURL(url);
           rej(e);
         });

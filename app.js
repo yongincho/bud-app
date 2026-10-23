@@ -39,6 +39,7 @@
     if (!A.PROVIDERS[s.provider] || (s.provider === 'preview' && !IN_PREVIEW)) s.provider = DEFAULTS.provider;
     if (IN_PREVIEW && ['anthropic', 'openai', 'gemini'].includes(s.provider)) s.provider = 'preview';
     s.connect = Object.assign({ on: false, server: '', key: '', seenBy: '' }, s.connect && typeof s.connect === 'object' ? s.connect : {});
+    if (s.keys.bud && s.provider === 'demo' && !IN_PREVIEW) s.provider = 'bud'; // the passcode means the real Bud
     return s;
   })();
   const save = () => {
@@ -433,15 +434,19 @@
     ear.finish();
   }
 
+  // The natural voice comes from Bud's server when there is a passcode, else from your OpenAI key.
   const voiceOpts = () => ({
     style: S.style,
     voice: S.voice,
-    engine: S.engine === 'openai' && !IN_PREVIEW ? 'openai' : 'system',
-    key: S.keys.openai,
-    onFallback: () => {
+    engine: S.engine === 'openai' && !IN_PREVIEW ? (S.keys.bud ? 'bud' : 'openai') : 'system',
+    key: S.keys.bud || S.keys.openai,
+    server: budServer(),
+    onFallback: (e) => {
+      if (e && e.status === 401) return toast('That Bud passcode isn’t right, so Bud used the system voice. Check it in Agents.');
+      if (e && e.name === 'NotAllowedError') return toast('Tap Bud once so it can play its voice.');
       if (T.voiceNote) return;
       T.voiceNote = true;
-      toast('The OpenAI voice did not answer, so Bud used the system voice.');
+      toast(S.keys.bud ? 'Bud’s voice server didn’t answer, so Bud used the system voice.' : 'The OpenAI voice did not answer, so Bud used the system voice.');
     },
   });
   function speak(text) {
@@ -475,7 +480,11 @@
     if (e && (e.code === 'not_granted' || e.code === 'sampling_disabled')) return 'This page is not allowed to use Claude. Allow it, or pick the demo brain in Agents.';
     if (e && e.code === 'rate_limited') return 'Claude is busy for a moment. Try again shortly.';
     if (prov && prov.keyName && !S.keys[S.provider]) return `Add your ${prov.keyName} in Agents, or pick the demo brain.`;
-    return `That did not work: ${(e && e.message) || 'unknown error'}.`;
+    if (S.provider === 'bud' && e instanceof TypeError) return 'I can’t reach Bud’s server right now. Try again in a moment, or pick the demo brain in Agents.';
+    const said = String((e && e.message) || 'unknown error').replace(/\.+$/, '');
+    if (S.provider === 'bud' && /passcode/i.test(said)) return 'That Bud passcode isn’t right. Check it in Agents.';
+    if (S.provider === 'bud' && /set up/i.test(said)) return `${said}. Pick the demo brain in Agents for now.`;
+    return `That did not work: ${said}.`;
   }
 
   async function submit(text) {
@@ -500,7 +509,7 @@
     try {
       const { reply, wrote } = await A.ask(text, {
         provider: S.provider,
-        cfg: { key: S.keys[S.provider], model: S.models[S.provider] },
+        cfg: { key: S.keys[S.provider], model: S.models[S.provider], server: budServer() },
         signal: T.ctrl.signal,
         onStatus: (st, cap) => {
           show(st, cap || '');
@@ -690,7 +699,7 @@
   function renderProviders() {
     const list = $('#provList');
     list.innerHTML = '';
-    const order = ['preview', 'anthropic', 'openai', 'gemini', 'demo'];
+    const order = ['bud', 'preview', 'anthropic', 'openai', 'gemini', 'demo'];
     order.forEach((id) => {
       const p = A.PROVIDERS[id];
       const off = (id === 'preview' && !IN_PREVIEW) || (IN_PREVIEW && p.keyName);
@@ -711,6 +720,7 @@
         save();
         A.reset();
         renderProviders();
+        paintTry();
       };
       list.append(el);
     });
@@ -718,13 +728,25 @@
     $('#provConfig').hidden = !p.keyName;
     if (p.keyName) {
       $('#provKeyLabel').textContent = p.keyName;
+      $('#provKey').placeholder = S.provider === 'bud' ? 'The Bud passcode' : 'Paste your key';
       $('#provKey').value = S.keys[S.provider] || '';
       $('#provModel').value = S.models[S.provider] || p.defaultModel;
+      $('#provModel').closest('.field').hidden = !!p.fixedModel; // Bud's server picks its own model
+      $('#provNote').textContent = S.provider === 'bud'
+        ? 'Ask Jason or Henry for the passcode. It stays in this browser and goes only to Bud’s server.'
+        : 'Your key stays in this browser and goes only to that provider. For a real launch, keys live on Bud’s server, not in the app.';
     }
   }
   $('#provKey').addEventListener('change', (e) => {
     S.keys[S.provider] = e.target.value.trim();
+    // the passcode brings Bud's natural voice too
+    if (S.provider === 'bud' && S.keys.bud && S.engine !== 'openai') {
+      S.engine = 'openai';
+      if (S.speak) toast('Natural voice on. You can change it in Settings.');
+    }
     save();
+    paintVoice();
+    paintTry();
   });
   $('#provModel').addEventListener('change', (e) => {
     S.models[S.provider] = e.target.value.trim();
@@ -825,9 +847,11 @@
     $('#setEngine').checked = neural;
     $('#engineRow').hidden = IN_PREVIEW;
     $('#voiceOutNote').textContent = neural
-      ? S.keys.openai
-        ? 'Bud speaks with OpenAI’s natural voice (AI-generated), using your OpenAI key from Agents.'
-        : 'Add your OpenAI key in Agents to use the natural voice. Until then Bud uses the system voice.'
+      ? S.keys.bud
+        ? 'Bud speaks with a natural AI voice from Bud’s server.'
+        : S.keys.openai
+          ? 'Bud speaks with OpenAI’s natural voice (AI-generated), using your OpenAI key from Agents.'
+          : 'Add the Bud passcode (Agents › Bud) or your OpenAI key to use the natural voice. Until then Bud uses the system voice.'
       : 'Bright, Buddy and Tiny tune the best voice your device has. On a Mac, Premium voices sound most natural: System Settings › Accessibility › Spoken Content › System Voice › Manage Voices.';
   }
   function sample() {
@@ -846,7 +870,7 @@
     S.engine = e.target.checked ? 'openai' : 'system';
     save();
     paintVoice();
-    if (e.target.checked && S.keys.openai) sample();
+    if (e.target.checked && (S.keys.bud || S.keys.openai)) sample();
   };
   $('#voiceTest').onclick = () => (S.speak ? sample() : toast('Turn on “Speak replies out loud” first.'));
   const setSounds = $('#setSounds');
@@ -930,6 +954,12 @@
   // state on Bud, bud_ask turns Bud pink and waits for your tap. Your own turns come first:
   // while Bud is busy with one, their faces wait and their questions queue.
   const CONNECT_SERVER = 'https://bud-connect.meetbud.workers.dev'; // the hosted server (connect/worker.mjs)
+  // Bud's server, home to Bud's hosted brain and voice (connect/brain.mjs). The passcode only goes
+  // there, or to a server on this computer while developing, whatever Connect is pointed at.
+  function budServer() {
+    const own = cleanServer(S.connect.server);
+    return own && /^https?:\/\/(localhost|127\.0\.0\.1|\[::1\])(:\d+)?$/.test(own) ? own : CONNECT_SERVER;
+  }
   const CLOSED = { expired: 'Expired', withdrawn: 'Withdrawn', gone: 'No longer open', off: 'Bud Connect off', device: 'This screen is Bud now', moved: 'Link changed' };
   const connect = new Connect({
     onState: paintConnect,
@@ -1143,6 +1173,27 @@
     S.connect.copied = false; // until it's copied, the status says agents don't have it yet
   }
 
+  // A link can hand a tester the Bud passcode (<app>#bp=<passcode>); like #bk, it stays on this device.
+  const passLink = /^#bp=([^&]{1,200})$/.exec(location.hash);
+  if (passLink && !IN_PREVIEW) {
+    history.replaceState(null, '', location.pathname + location.search);
+    let pass = '';
+    try {
+      pass = decodeURIComponent(passLink[1]).trim();
+    } catch (e) {
+      pass = '';
+    }
+    if (pass && (pass === S.keys.bud || window.confirm('Use the Bud passcode from this link? Bud will then think with Claude on Bud’s server.'))) {
+      S.keys.bud = pass;
+      S.provider = 'bud';
+      S.engine = 'openai';
+      save();
+      renderProviders();
+      paintVoice();
+      toast('Bud’s real brain is on. Ask it anything.');
+    }
+  }
+
   // A link from "Use on another device" carries the app key in the fragment, which browsers never send anywhere.
   const carried = /^#bk=([A-Za-z0-9_-]+)(?:&server=([^&]+))?$/.exec(location.hash);
   if (carried) {
@@ -1235,6 +1286,13 @@
     $('#connectOn').disabled = true;
     $('#connectStatus').textContent = 'Open the Bud app on its own page to use Bud Connect.';
   } else restartConnect();
+
+  ['pointerdown', 'keydown'].forEach((ev) => document.addEventListener(ev, () => Sfx.unlock(), { capture: true, passive: true }));
+  // On the demo brain, say where the real one is.
+  function paintTry() {
+    $('#tryDemo').hidden = S.provider !== 'demo' || IN_PREVIEW;
+  }
+  paintTry();
 
   if (!WIDE) $('#deviceText').textContent = 'No Bud nearby';
   setMode(DEVICE_MODE ? 'device' : 'app');
