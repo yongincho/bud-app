@@ -99,6 +99,9 @@
         if (mode === 'turn') {
           text = Array.prototype.map.call(e.results, (r) => r[0].transcript).join('');
           this._emit('onInterim', text);
+          // a short silence after real words ends the request; stop() hands back what was heard
+          clearTimeout(this.endT);
+          if (text.trim()) this.endT = setTimeout(() => this.rec === rec && this.mode === 'turn' && rec.stop(), END_OF_SPEECH_MS);
           return;
         }
         // waiting for "Hey Bud"; what follows it, in the same breath or the next, is the request
@@ -132,6 +135,7 @@
         }
       };
       rec.onend = () => {
+        clearTimeout(this.endT);
         if (rec.dead || this.rec !== rec) return;
         this.rec = null;
         this.mode = 'off';
@@ -169,11 +173,21 @@
   /* ------------------------------------------------------------ the voice */
 
   // Styles: how Bud sounds. System voices get pitch and pace; OpenAI voices get a direction.
+  // "buddy" is Bud's own voice: one cheerful young man, the same every time.
   const STYLES = {
+    buddy: {
+      label: 'Bud',
+      want: 'm',
+      pitch: 1.08,
+      rate: 1.06,
+      openai: 'ash',
+      how: 'You are Bud, a cheerful little buddy who lives on the back of the user’s phone. Speak as an upbeat, friendly young man who is smiling while he talks: bright, warm and quick, a little playful, never stiff or formal. Keep exactly the same voice, energy and pace every time.',
+    },
     bright: { label: 'Bright', want: 'f', pitch: 1.15, rate: 1.05, openai: 'coral', how: 'Bright, warm and upbeat, like a cheerful friend who is happy to help. Natural and quick, never stiff or formal.' },
-    buddy: { label: 'Buddy', want: 'm', pitch: 1.06, rate: 1.04, openai: 'ash', how: 'Warm, easygoing and friendly, like a helpful buddy. Relaxed and kind, at a natural pace.' },
     tiny: { label: 'Tiny', want: 'x', pitch: 1.45, rate: 1.08, openai: 'nova', how: 'Small, playful and sweet, like a cheerful little robot friend. Light, quick and a little excited.' },
   };
+  // A spoken request ends this long after the last word, instead of the recognizer's longer pause.
+  const END_OF_SPEECH_MS = 700;
   // Voices that are jokes or sound like 1990s computers
   const NOVELTY = /^(Albert|Bad News|Bahh|Bells|Boing|Bubbles|Cellos|Good News|Jester|Organ|Pipe Organ|Superstar|Trinoids|Whisper|Wobble|Zarvox|Fred|Junior|Kathy|Ralph|Princess|Eddy|Flo|Grandma|Grandpa|Reed|Rocko|Sandy|Shelley|Deranged|Hysterical)\b/i;
   const FEMALE = /\b(Ava|Zoe|Allison|Susan|Samantha|Karen|Moira|Tessa|Fiona|Veena|Joelle|Noelle|Nicky|Serena|Kate|Victoria|Aria|Jenny|Michelle|Emma|Ana|Sonia|Libby|Natasha|Clara|Catherine|Zira|Hazel|Joanna|Salli|Kendra|Kimberly|Ivy|Amy|Female)\b/i;
@@ -201,7 +215,7 @@
     const all = english();
     const chosen = uri && all.find((v) => v.voiceURI === uri);
     if (chosen) return chosen;
-    const want = (STYLES[style] || STYLES.bright).want;
+    const want = (STYLES[style] || STYLES.buddy).want;
     return all.slice().sort((a, b) => rank(b, want) - rank(a, want))[0] || null;
   }
 
@@ -220,7 +234,7 @@
     STYLES,
     /** The English voices this browser has, best first for the style, without the joke voices. */
     list(style) {
-      const want = (STYLES[style] || STYLES.bright).want;
+      const want = (STYLES[style] || STYLES.buddy).want;
       return english()
         .filter((v) => !NOVELTY.test(v.name))
         .sort((a, b) => rank(b, want) - rank(a, want));
@@ -255,14 +269,88 @@
     },
     // Ends whatever natural-voice audio is playing, so its promise settles.
     _cut() {
-      if (this.source) {
+      for (const src of [this.source, ...(this.sources || [])]) {
+        if (!src) continue;
         try {
-          this.source.stop();
+          src.stop();
         } catch (e) {
           /* already stopped */
         }
       }
+      this.sources = [];
       if (this.audio) this.audio.pause();
+    },
+    // Plays 24 kHz 16-bit PCM as it downloads, so Bud starts talking a moment after asking for the
+    // audio instead of after all of it has arrived.
+    async _stream(res, ac, gen) {
+      const RATE = 24000;
+      const reader = res.body.getReader();
+      const sources = (this.sources = []);
+      let at = 0; // when the next piece plays, on the AudioContext clock
+      let carry = null; // a byte split across two chunks
+      let held = [];
+      let heldLength = 0;
+      const play = (samples) => {
+        const buf = ac.createBuffer(1, samples.length, RATE);
+        buf.copyToChannel(samples, 0);
+        const src = ac.createBufferSource();
+        src.buffer = buf;
+        src.connect(ac.destination);
+        at = Math.max(at, ac.currentTime + 0.03);
+        src.start(at);
+        at += buf.duration;
+        sources.push(src);
+      };
+      const flush = () => {
+        if (!heldLength) return;
+        const all = new Float32Array(heldLength);
+        let i = 0;
+        for (const h of held) {
+          all.set(h, i);
+          i += h.length;
+        }
+        held = [];
+        heldLength = 0;
+        play(all);
+      };
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (gen !== this.gen) {
+          reader.cancel().catch(() => {});
+          return;
+        }
+        if (done) break;
+        let bytes = value;
+        if (carry) {
+          const joined = new Uint8Array(carry.length + bytes.length);
+          joined.set(carry);
+          joined.set(bytes, carry.length);
+          bytes = joined;
+          carry = null;
+        }
+        if (bytes.length % 2) {
+          carry = bytes.slice(-1);
+          bytes = bytes.subarray(0, bytes.length - 1);
+        }
+        const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+        const samples = new Float32Array(bytes.length / 2);
+        for (let i = 0; i < samples.length; i++) samples[i] = view.getInt16(i * 2, true) / 32768;
+        held.push(samples);
+        heldLength += samples.length;
+        // a quarter second in hand before starting, then every piece as it comes
+        if (sources.length || heldLength >= RATE / 4) flush();
+      }
+      flush();
+      const last = sources[sources.length - 1];
+      if (!last) return;
+      await new Promise((resolve) => {
+        const guard = setTimeout(resolve, Math.max(0, (at - ac.currentTime) * 1000) + 250);
+        last.onended = () => {
+          clearTimeout(guard);
+          resolve();
+        };
+      });
+      if (this.sources === sources) this.sources = [];
     },
     _system(text, opts) {
       return new Promise((res) => {
@@ -276,7 +364,7 @@
           clearTimeout(guard);
           res();
         };
-        const st = STYLES[opts.style] || STYLES.bright;
+        const st = STYLES[opts.style] || STYLES.buddy;
         const u = new SpeechSynthesisUtterance(text);
         const v = pick(opts.style, opts.voice);
         if (v) {
@@ -298,20 +386,26 @@
     },
     // OpenAI's natural voice: with your own key, or through the Bud server (which holds the key).
     async _natural(text, opts, gen) {
-      const st = STYLES[opts.style] || STYLES.bright;
+      const st = STYLES[opts.style] || STYLES.buddy;
+      const live = Sfx.ctx();
+      const streaming = !!(live && live.state === 'running' && root.ReadableStream);
       const r =
         opts.engine === 'bud'
           ? await fetch(`${opts.server}/brain/voice`, {
               method: 'POST',
               headers: { 'Content-Type': 'application/json', 'x-bud-pass': opts.key },
-              body: JSON.stringify({ text, voice: st.openai, instructions: st.how }),
+              body: JSON.stringify({ text, voice: st.openai, instructions: st.how, format: streaming ? 'pcm' : 'mp3' }),
             })
           : await fetch('https://api.openai.com/v1/audio/speech', {
               method: 'POST',
               headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${opts.key}` },
-              body: JSON.stringify({ model: 'gpt-4o-mini-tts', voice: st.openai, input: text, instructions: st.how, response_format: 'mp3' }),
+              body: JSON.stringify({ model: 'gpt-4o-mini-tts', voice: st.openai, input: text, instructions: st.how, response_format: streaming ? 'pcm' : 'mp3' }),
             });
       if (!r.ok) throw Object.assign(new Error(`The natural voice answered ${r.status}`), { status: r.status });
+      if (gen !== this.gen) return;
+      // raw PCM plays as it arrives (an older server still sends MP3, which plays below)
+      const pcm = opts.engine === 'bud' ? /audio\/pcm/.test(r.headers.get('content-type') || '') : streaming;
+      if (streaming && pcm && r.body) return this._stream(r, live, gen);
       const blob = await r.blob();
       if (gen !== this.gen) return; // stopped, or another reading started, while this downloaded
       // Played through the sound engine Bud's first tap unlocked: phones (Safari above all) refuse

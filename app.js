@@ -25,7 +25,7 @@
 
   const SKEY = 'bud.app.settings.v1';
   const DEFAULTS = {
-    provider: IN_PREVIEW ? 'preview' : 'demo', keys: {}, models: {}, speak: true, voice: '', style: 'bright', engine: 'system', sounds: true,
+    provider: IN_PREVIEW ? 'preview' : 'demo', keys: {}, models: {}, speak: true, voice: '', style: 'buddy', engine: 'system', sounds: true,
     mic: true, wake: false, flip: true, timeout: 8, look: '', shell: '#F4F1EC',
   };
   const S = (() => {
@@ -40,6 +40,8 @@
     if (IN_PREVIEW && ['anthropic', 'openai', 'gemini'].includes(s.provider)) s.provider = 'preview';
     s.connect = Object.assign({ on: false, server: '', key: '', seenBy: '' }, s.connect && typeof s.connect === 'object' ? s.connect : {});
     if (s.keys.bud && s.provider === 'demo' && !IN_PREVIEW) s.provider = 'bud'; // the passcode means the real Bud
+    // Bud has one voice now, a cheerful young man's; settings saved before that move to it once
+    if (s.voiceV !== 2) Object.assign(s, { style: 'buddy', voice: '', voiceV: 2 });
     return s;
   })();
   const save = () => {
