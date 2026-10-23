@@ -341,7 +341,7 @@
   PROVIDERS.anthropic = {
     label: 'Claude API',
     keyName: 'Anthropic API key',
-    defaultModel: 'claude-opus-5-5',
+    defaultModel: 'claude-haiku-5-5',
     turn(history, ctx, cfg) {
       const model = cfg.model || this.defaultModel;
       const extras = claudeExtras(model);
@@ -354,10 +354,10 @@
   // Bud's own brain: Claude on the Bud server, which holds the key. The app only needs the passcode.
   PROVIDERS.bud = {
     label: 'Bud (hosted Claude)',
-    note: 'Claude Opus 5.5 on Bud’s server. No API key here, just the Bud passcode.',
+    note: 'Claude on Bud’s server. No API key here, just the Bud passcode.',
     keyName: 'Bud passcode',
     fixedModel: true,
-    defaultModel: 'claude-opus-5-5',
+    defaultModel: 'claude-haiku-5-5',
     turn(history, ctx, cfg) {
       if (!cfg.server) throw new Error('No Bud server is set.');
       return claudeTurn(history, ctx, (req) => postJSON(`${cfg.server}/brain/messages`, req, { 'x-bud-pass': cfg.key }, ctx.signal));
